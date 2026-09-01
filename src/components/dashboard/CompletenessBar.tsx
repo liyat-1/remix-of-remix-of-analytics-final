@@ -20,8 +20,9 @@ export function CompletenessBar({ a, sel }: { a: Agg; sel: Selection }) {
   const total = Math.max(1, a.bookings);
   const complete = a.usable / total;
 
+  // Completeness is about what enrichment completed — the OTA baseline arrives
+  // complete by definition, so it is not a level here.
   const rows: Row[] = [];
-  if (sel.ota) rows.push({ key: "ota", label: "OTA baseline", value: a.ota, depth: 0, color: "var(--ota)" });
   if (sel.l1) rows.push({ key: "l1", label: "Level 1 — Whois AI", value: a.l1, depth: 0, color: "var(--l1)" });
   if (sel.l2) {
     rows.push({ key: "l2", label: "Level 2", value: a.l2, depth: 0, color: "var(--l2)" });
@@ -32,6 +33,7 @@ export function CompletenessBar({ a, sel }: { a: Agg; sel: Selection }) {
   }
 
   const peak = Math.max(1, ...rows.map((r) => r.value));
+
 
   const R = 54;
   const C = 2 * Math.PI * R;

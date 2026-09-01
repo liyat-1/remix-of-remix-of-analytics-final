@@ -2,18 +2,22 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { ArrowUpRight, ChartColumn, ChartPie, Sparkles } from "lucide-react";
 
-import { Checkbox } from "@/components/ui/checkbox";
 import { CompletenessBar } from "@/components/dashboard/CompletenessBar";
 import { ControlsBar } from "@/components/dashboard/ControlsBar";
+import { GraphControls } from "@/components/dashboard/GraphControls";
 import { HeroBridge } from "@/components/dashboard/HeroBridge";
-import { MixDonut, MixLegend, type Breakdown, type SourceKey } from "@/components/dashboard/UsableMixPie";
+import {
+  MixDonut,
+  MixLegend,
+  SourceToggles,
+  type Breakdown,
+  type SourceKey,
+} from "@/components/dashboard/UsableMixPie";
 import { TimeSeriesChart } from "@/components/dashboard/TimeSeriesChart";
 import {
   DEFAULT_PROPERTY,
   DEFAULT_SELECTION,
   aggregate,
-  buildScopeSeries,
-  buildSeries,
   compact,
   formatRange,
   getRows,
@@ -24,12 +28,19 @@ import {
   stageFields,
   toTotals,
   type ComparisonId,
-  type LeafKey,
   type PeriodId,
   type PropertyId,
   type Range,
   type Selection,
 } from "@/lib/analytics-model";
+import {
+  DEFAULT_EXPANSION,
+  buildChartSeries,
+  dayLabels,
+  resolveNodes,
+  type Expansion,
+  type GraphMode,
+} from "@/lib/graph-series";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -53,8 +64,6 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-type ScopeNode = { key: LeafKey; label: string; depth: number };
-
 function Dashboard() {
   const [property, setProperty] = useState<PropertyId>(DEFAULT_PROPERTY);
   const [period, setPeriod] = useState<PeriodId>("15d");
@@ -63,8 +72,12 @@ function Dashboard() {
   const [customCompare, setCustomCompare] = useState<Range | null>(null);
   const [selection, setSelection] = useState<Selection>(DEFAULT_SELECTION);
   const [breakdown, setBreakdown] = useState<Breakdown>({ ota: false, l1: false, l2: false });
-  const [scopeOff, setScopeOff] = useState<Partial<Record<LeafKey, boolean>>>({});
   const [chartView, setChartView] = useState<"pie" | "bridge">("pie");
+
+  // Time graph state
+  const [graphMode, setGraphMode] = useState<GraphMode>("totals");
+  const [expansion, setExpansion] = useState<Expansion>(DEFAULT_EXPANSION);
+  const [hidden, setHidden] = useState<Record<string, boolean>>({});
 
   const range = useMemo(() => resolvePeriod(period, customRange), [period, customRange]);
   const compareRange = useMemo(
@@ -85,50 +98,24 @@ function Dashboard() {
   );
 
   const fields = useMemo(() => stageFields(a, selection), [a, selection]);
-  const series = useMemo(() => buildSeries(rows, selection), [rows, selection]);
-  const compareSeries = useMemo(
-    () => (compareRows ? buildSeries(compareRows, selection) : null),
-    [compareRows, selection],
-  );
-
-  // Which breakdown nodes the time chart can follow, driven by the pie's
-  // "Show breakdown" checkboxes.
-  const scopeNodes: ScopeNode[] = useMemo(() => {
-    const out: ScopeNode[] = [];
-    if (selection.ota && breakdown.ota) out.push({ key: "ota", label: "OTA baseline", depth: 0 });
-    if (selection.l1 && breakdown.l1) out.push({ key: "l1", label: "Level 1 — Whois AI", depth: 0 });
-    if (selection.l2 && breakdown.l2) {
-      out.push({ key: "journey", label: "Guest Journey", depth: 0 });
-      out.push({ key: "staff", label: "During Stay · Staff Collection", depth: 1 });
-      out.push({ key: "idscan", label: "During Stay · ID Scan Collection", depth: 1 });
-    }
-    return out;
-  }, [selection, breakdown]);
-
-  const activeScope = scopeNodes.filter((n) => !scopeOff[n.key]);
-  const scopeKeys = activeScope.map((n) => n.key);
-
-  const scopePoints = useMemo(
-    () => (scopeKeys.length ? buildScopeSeries(rows, selection, scopeKeys) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, selection, scopeKeys.join(",")],
-  );
-  const scopeCompare = useMemo(
-    () => (compareRows && scopeKeys.length ? buildScopeSeries(compareRows, selection, scopeKeys) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [compareRows, selection, scopeKeys.join(",")],
-  );
-
-  const scopeLabel =
-    activeScope.length === 0
-      ? "Total usable"
-      : activeScope.length > 2
-        ? "Selected breakdown"
-        : activeScope.map((n) => n.label).join(" + ");
-
   const t = useMemo(() => toTotals(a), [a]);
   const layers = { ota: selection.ota, l1: selection.l1, l2: selection.l2 };
   const l2detail = { journey: a.journey, staff: a.staff, idscan: a.idscan, duringStay: a.duringStay };
+
+  const nodes = useMemo(
+    () => resolveNodes(graphMode, selection, expansion),
+    [graphMode, selection, expansion],
+  );
+  const visibleNodes = nodes.filter((n) => !hidden[n.key]);
+  const chartSeries = useMemo(
+    () => buildChartSeries(visibleNodes, rows, compareRows, selection),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleNodes.map((n) => n.key).join(","), rows, compareRows, selection],
+  );
+  const labels = useMemo(() => dayLabels(rows), [rows]);
+
+  const rangeLabel = formatRange(range);
+  const compareLabel = compareRange ? formatRange(compareRange) : null;
 
   const toggleSource = (k: SourceKey) =>
     setSelection((s) => {
@@ -138,6 +125,7 @@ function Dashboard() {
     });
 
   const toggleBreakdown = (k: SourceKey) => setBreakdown((b) => ({ ...b, [k]: !b[k] }));
+  const toggleSel = (k: keyof Selection) => setSelection((s) => ({ ...s, [k]: !s[k] }));
 
   return (
     <main className="mx-auto w-full max-w-[1400px] px-5 py-10 lg:px-10">
@@ -189,16 +177,38 @@ function Dashboard() {
         </div>
       </section>
 
-      <div className="grid items-start gap-6 xl:grid-cols-[1.6fr_1fr]">
-        <section className="panel p-6 lg:p-8">
+      <div className="grid items-start gap-6 xl:grid-cols-[1.75fr_1fr]">
+        <section
+          role="button"
+          tabIndex={0}
+          onClick={() => setGraphMode("sources")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") setGraphMode("sources");
+          }}
+          className={`panel cursor-pointer p-6 transition-shadow lg:p-8 ${
+            graphMode === "sources" ? "ring-2 ring-primary/60" : "hover:ring-1 hover:ring-primary/30"
+          }`}
+        >
           <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-xl font-semibold">Usable mix</h2>
               <p className="text-sm text-muted-foreground">
                 Every booking is usable, still recoverable, or unrecoverable.
               </p>
+              <p className="num mt-1 text-xs text-muted-foreground">
+                {rangeLabel}
+                {compareLabel ? ` · vs ${compareLabel}` : ""}
+              </p>
+              <p className="mt-1 text-xs text-primary">
+                {graphMode === "sources"
+                  ? "Tracked over time in the graph below"
+                  : "Click this card to track these sources over time"}
+              </p>
             </div>
-            <div className="flex rounded-xl border border-border bg-surface-2/60 p-1">
+            <div
+              className="flex rounded-xl border border-border bg-surface-2/60 p-1"
+              onClick={(e) => e.stopPropagation()}
+            >
               {(
                 [
                   ["pie", "Pie", ChartPie],
@@ -221,91 +231,94 @@ function Dashboard() {
             </div>
           </div>
 
-          {chartView === "pie" ? (
-            <div className="space-y-6">
-              <div className={prevA ? "grid gap-6 md:grid-cols-2" : "flex justify-center"}>
-                <MixDonut
+          <div onClick={(e) => e.stopPropagation()}>
+            {chartView === "pie" ? (
+              <div className="grid items-center gap-8 lg:grid-cols-[minmax(0,340px)_1fr]">
+                <div className="flex justify-center">
+                  <MixDonut a={a} sel={selection} bd={breakdown} size={340} />
+                </div>
+                <MixLegend
                   a={a}
+                  prev={prevA}
                   sel={selection}
                   bd={breakdown}
-                  title={prevA ? "Current period" : "Selected period"}
-                  rangeLabel={formatRange(range)}
-                  size={prevA ? 320 : 380}
+                  onToggleSource={toggleSource}
+                  onToggleBreakdown={toggleBreakdown}
+                  onToggleSel={toggleSel}
                 />
-                {prevA && compareRange && (
-                  <MixDonut
-                    a={prevA}
-                    sel={selection}
-                    bd={breakdown}
-                    title="Previous period"
-                    rangeLabel={formatRange(compareRange)}
-                    size={320}
-                  />
-                )}
               </div>
-              <MixLegend
-                a={a}
-                prev={prevA}
-                sel={selection}
-                bd={breakdown}
-                onToggleSource={toggleSource}
-                onToggleBreakdown={toggleBreakdown}
-              />
-            </div>
-          ) : (
-            <HeroBridge t={t} layers={layers} fields={fields} l2={l2detail} />
-          )}
+            ) : (
+              <>
+                <SourceToggles sel={selection} onToggle={toggleSource} />
+                <HeroBridge
+                  t={t}
+                  layers={layers}
+                  fields={fields}
+                  l2={l2detail}
+                  bookings={a.bookings}
+                  unrecoverable={a.unrecoverable}
+                  rangeLabel={rangeLabel}
+                />
+              </>
+            )}
+          </div>
         </section>
 
         <section className="panel p-6 lg:p-8">
           <h2 className="mb-1 text-xl font-semibold">Information completeness by level</h2>
-          <p className="mb-5 text-sm text-muted-foreground">
-            How complete guest information is, and which level completed it.
+          <p className="text-sm text-muted-foreground">
+            How complete guest information is, and which enrichment level completed it.
           </p>
+          <p className="num mt-1 mb-5 text-xs text-muted-foreground">{rangeLabel}</p>
           <CompletenessBar a={a} sel={selection} />
         </section>
       </div>
 
       <section className="panel mt-6 p-6 lg:p-8">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold">Over time</h2>
-          <p className="text-sm text-muted-foreground">
-            {scopeKeys.length
-              ? "Field-level progress for the selected breakdown. Hover keeps the remaining and unrecoverable context."
-              : "Daily usable, opportunity remaining and unrecoverable. Turn on Show breakdown in the pie to follow fields over time."}
-          </p>
-        </div>
-
-        {scopeNodes.length > 0 && (
-          <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-border bg-surface-2/40 p-3">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Breakdown scope
-            </span>
-            {scopeNodes.map((nde) => (
-              <label
-                key={nde.key}
-                className="flex cursor-pointer items-center gap-2 text-sm"
-                style={{ paddingLeft: nde.depth * 12 }}
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">Over time</h2>
+            <p className="text-sm text-muted-foreground">
+              {graphMode === "totals"
+                ? "Daily usable, opportunity remaining and unrecoverable."
+                : "Traction per source. Expand a level to replace it with its components."}
+            </p>
+          </div>
+          <div className="flex rounded-xl border border-border bg-surface-2/60 p-1">
+            {(
+              [
+                ["totals", "Totals"],
+                ["sources", "Sources"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setGraphMode(id)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                  graphMode === id
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
               >
-                <Checkbox
-                  checked={!scopeOff[nde.key]}
-                  onCheckedChange={() =>
-                    setScopeOff((s) => ({ ...s, [nde.key]: !s[nde.key] }))
-                  }
-                  aria-label={nde.label}
-                />
-                {nde.label}
-              </label>
+                {label}
+              </button>
             ))}
           </div>
-        )}
+        </div>
+
+        <GraphControls
+          nodes={nodes}
+          hidden={hidden}
+          onToggleVisible={(k) => setHidden((h) => ({ ...h, [k]: !h[k] }))}
+          expansion={expansion}
+          onToggleExpand={(k) => setExpansion((e) => ({ ...e, [k]: !e[k] }))}
+        />
 
         <TimeSeriesChart
-          points={series}
-          compare={compareSeries}
-          scopePoints={scopePoints}
-          scopeCompare={scopeCompare}
-          scopeLabel={scopeLabel}
+          labels={labels}
+          series={chartSeries}
+          rangeLabel={rangeLabel}
+          compareLabel={compareLabel}
         />
       </section>
     </main>
