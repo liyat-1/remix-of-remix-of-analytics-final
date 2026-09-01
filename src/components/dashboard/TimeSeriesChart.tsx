@@ -1,16 +1,14 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
-import { Checkbox } from "@/components/ui/checkbox";
-import { compact, nf, type ScopePoint, type SeriesPoint } from "@/lib/analytics-model";
+import { compact, nf } from "@/lib/analytics-model";
+import type { ChartSeries } from "@/lib/graph-series";
 
 const W = 1120;
-const H = 400;
+const H = 420;
 const TOP = 24;
-const BOTTOM = 320;
+const BOTTOM = 330;
 const LEFT = 76;
 const RIGHT = W - 24;
-
-type Serie = { key: string; label: string; color: string; values: number[]; prev?: number[] };
 
 function niceTicks(max: number, count = 4) {
   const raw = Math.max(1, max) / count;
@@ -24,93 +22,40 @@ function niceTicks(max: number, count = 4) {
 const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
 
 export function TimeSeriesChart({
-  points,
-  compare,
-  scopePoints,
-  scopeCompare,
-  scopeLabel,
+  labels,
+  series,
   rangeLabel,
   compareLabel,
 }: {
-  points: SeriesPoint[];
-  compare: SeriesPoint[] | null;
-  scopePoints: ScopePoint[] | null;
-  scopeCompare: ScopePoint[] | null;
-  scopeLabel: string;
+  labels: string[];
+  series: ChartSeries[];
   rangeLabel: string;
   compareLabel: string | null;
 }) {
-  const fieldMode = !!scopePoints;
-  const [visible, setVisible] = useState<Record<string, boolean>>({});
   const [hover, setHover] = useState<number | null>(null);
+  const [barHover, setBarHover] = useState<number | null>(null);
 
-  const isOn = (k: string) => visible[k] !== false;
+  const hasCompare = !!compareLabel && series.some((s) => s.prev);
 
-  const series: Serie[] = useMemo(() => {
-    const pick = (arr: Array<Record<string, number>> | null, key: string) =>
-      arr ? arr.map((p) => p[key] ?? 0) : undefined;
-
-    const defs =
-      fieldMode && scopePoints
-        ? ([
-            ["email", "Email", "var(--l2)"],
-            ["phone", "Phone", "var(--l1)"],
-            ["address", "Address", "var(--ceiling)"],
-          ] as const)
-        : ([
-            ["usable", "Total usable", "var(--l2)"],
-            ["recoverable", "Opportunity remaining", "var(--recoverable)"],
-            ["unrecoverable", "Unrecoverable", "var(--unrecoverable)"],
-          ] as const);
-
-    const src = (fieldMode ? scopePoints : points) as unknown as Array<Record<string, number>>;
-    const cmp = (fieldMode ? scopeCompare : compare) as unknown as Array<
-      Record<string, number>
-    > | null;
-
-    return defs.map(([key, label, color]) => {
-      const prev = pick(cmp, key);
-      return { key, label, color, values: pick(src, key) ?? [], ...(prev ? { prev } : {}) };
-    });
-  }, [fieldMode, scopePoints, scopeCompare, points, compare]);
-
-  const shown = series.filter((s) => isOn(s.key));
-  const hasCompare = !!(fieldMode ? scopeCompare : compare);
-
-  const header = (
-    <>
-      <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2">
-        {series.map((t) => (
-          <label key={t.key} className="flex cursor-pointer items-center gap-2 text-sm">
-            <Checkbox
-              checked={isOn(t.key)}
-              onCheckedChange={() => setVisible((s) => ({ ...s, [t.key]: !isOn(t.key) }))}
-              aria-label={t.label}
-              style={{ "--primary": t.color, "--border": t.color } as React.CSSProperties}
-            />
-            <i className="size-3 rounded-[4px]" style={{ background: t.color }} />
-            {t.label}
-          </label>
-        ))}
-        {fieldMode && (
-          <span className="text-xs text-muted-foreground">
-            Fields of <span className="font-semibold text-foreground">{scopeLabel}</span>
-          </span>
-        )}
-      </div>
-      <div className="num mb-3 text-sm font-semibold">
-        {rangeLabel}
-        {compareLabel ? (
-          <span className="font-normal text-muted-foreground"> vs {compareLabel}</span>
-        ) : null}
-      </div>
-    </>
+  const caption = (
+    <div className="num mb-3 text-sm font-semibold">
+      {rangeLabel}
+      {compareLabel ? <span className="font-normal text-muted-foreground"> vs {compareLabel}</span> : null}
+    </div>
   );
 
-  /* ------------------------------------------- comparison: two bars only */
+  if (series.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+        Select at least one series to plot.
+      </div>
+    );
+  }
+
+  /* ------------------------------------------ comparison: grouped bar chart */
 
   if (hasCompare) {
-    const groups = shown.map((s) => ({
+    const groups = series.map((s) => ({
       ...s,
       current: sum(s.values),
       previous: sum(s.prev ?? []),
@@ -120,11 +65,12 @@ export function TimeSeriesChart({
     const top = ticks[ticks.length - 1] ?? max;
     const y = (v: number) => BOTTOM - (v / top) * (BOTTOM - TOP);
     const slot = (RIGHT - LEFT) / Math.max(1, groups.length);
-    const barW = Math.min(96, slot / 3);
+    const barW = Math.min(84, slot / 3);
+    const hg = barHover !== null ? groups[barHover] : null;
 
     return (
-      <div className="w-full">
-        {header}
+      <div className="relative w-full">
+        {caption}
         <div className="mb-2 flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <i className="h-3 w-2.5 rounded-[3px] bg-foreground/70" /> {rangeLabel}
@@ -148,12 +94,19 @@ export function TimeSeriesChart({
           {groups.map((g, i) => {
             const cx = LEFT + slot * i + slot / 2;
             const bars = [
-              { v: g.current, x: cx - barW - 6, prev: false },
-              { v: g.previous, x: cx + 6, prev: true },
+              { v: g.current, x: cx - barW - 5, prev: false },
+              { v: g.previous, x: cx + 5, prev: true },
             ];
             const diff = g.previous ? (g.current - g.previous) / g.previous : 0;
+            const active = barHover === i;
             return (
-              <g key={g.key}>
+              <g
+                key={g.key}
+                className="cursor-help"
+                onMouseEnter={() => setBarHover(i)}
+                onMouseLeave={() => setBarHover(null)}
+              >
+                <rect x={cx - slot / 2} y={TOP} width={slot} height={BOTTOM - TOP} fill="transparent" />
                 {bars.map((b) => (
                   <g key={String(b.prev)}>
                     <rect
@@ -165,59 +118,90 @@ export function TimeSeriesChart({
                       fill={b.prev ? `color-mix(in oklab, ${g.color} 28%, var(--surface-2))` : g.color}
                       stroke={b.prev ? g.color : "none"}
                       strokeOpacity="0.5"
+                      opacity={barHover !== null && !active ? 0.4 : 1}
                     />
                     <text
                       x={b.x + barW / 2}
                       y={y(b.v) - 8}
                       textAnchor="middle"
-                      className="num"
+                      className="num pointer-events-none"
                       fill="var(--foreground)"
-                      fontSize="14"
+                      fontSize="13"
                       fontWeight="700"
                     >
                       {compact(b.v)}
                     </text>
                   </g>
                 ))}
-                <text x={cx} y={BOTTOM + 24} textAnchor="middle" fill="var(--foreground)" fontSize="14" fontWeight="600">
+                <text
+                  x={cx}
+                  y={BOTTOM + 24}
+                  textAnchor="middle"
+                  className="pointer-events-none"
+                  fill="var(--foreground)"
+                  fontSize="13"
+                  fontWeight="600"
+                >
                   {g.label}
                 </text>
                 <text
                   x={cx}
                   y={BOTTOM + 44}
                   textAnchor="middle"
-                  className="num"
+                  className="num pointer-events-none"
                   fill={diff >= 0 ? "var(--l2)" : "var(--muted-foreground)"}
                   fontSize="13"
                   fontWeight="600"
                 >
                   {diff >= 0 ? "+" : ""}
-                  {(diff * 100).toFixed(1)}% vs comparison
+                  {(diff * 100).toFixed(1)}%
                 </text>
               </g>
             );
           })}
-
-          <text
-            x={(LEFT + RIGHT) / 2}
-            y={H - 6}
-            textAnchor="middle"
-            className="num"
-            fill="var(--muted-foreground)"
-            fontSize="12"
-            fontWeight="600"
-          >
-            {rangeLabel} vs {compareLabel}
-          </text>
         </svg>
+
+        {hg && (
+          <div
+            className="panel pointer-events-none absolute top-16 z-20 w-64 rounded-xl border border-border p-3 text-xs shadow-lg"
+            style={{
+              left: `${((LEFT + slot * barHover! + slot / 2) / W) * 100}%`,
+              transform: `translateX(${barHover! >= groups.length / 2 ? "-110%" : "10%"})`,
+              background: "var(--background)",
+            }}
+          >
+            <div className="mb-2 flex items-center gap-2 font-semibold">
+              <i className="size-3 rounded-[4px]" style={{ background: hg.color }} />
+              {hg.label}
+            </div>
+            <dl className="space-y-1">
+              <Row k={rangeLabel} v={hg.current} bold />
+              <Row k={compareLabel ?? "Previous"} v={hg.previous} />
+              <div className="flex justify-between gap-3 border-t border-border pt-1">
+                <dt className="text-muted-foreground">Change</dt>
+                <dd
+                  className="num font-bold"
+                  style={{ color: hg.current >= hg.previous ? "var(--l2)" : "var(--muted-foreground)" }}
+                >
+                  {hg.current - hg.previous >= 0 ? "+" : ""}
+                  {nf.format(Math.round(hg.current - hg.previous))} (
+                  {hg.previous
+                    ? `${(((hg.current - hg.previous) / hg.previous) * 100).toFixed(1)}%`
+                    : "—"}
+                  )
+                </dd>
+              </div>
+            </dl>
+          </div>
+        )}
       </div>
     );
   }
 
   /* ---------------------------------------------- no comparison: line chart */
 
-  const n = Math.max(points.length, 1);
-  const max = Math.max(1, ...shown.flatMap((s) => s.values));
+  const n = Math.max(labels.length, 1);
+  const max = Math.max(1, ...series.flatMap((s) => s.values));
   const ticks = niceTicks(max);
   const top = ticks[ticks.length - 1] ?? max;
   const y = (v: number) => BOTTOM - (v / top) * (BOTTOM - TOP);
@@ -225,12 +209,9 @@ export function TimeSeriesChart({
   const px = (i: number) => (n > 1 ? LEFT + step * i : (LEFT + RIGHT) / 2);
   const labelStep = Math.max(1, Math.ceil(n / 12));
 
-  const hp = hover !== null ? points[hover] : null;
-  const hs = hover !== null && scopePoints ? scopePoints[hover] : null;
-
   return (
     <div className="relative w-full">
-      {header}
+      {caption}
 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Guest information over time">
         {ticks.map((v) => (
@@ -258,7 +239,7 @@ export function TimeSeriesChart({
           <line x1={px(hover)} y1={TOP} x2={px(hover)} y2={BOTTOM} stroke="var(--border)" strokeWidth="1.5" />
         )}
 
-        {shown.map((s) => (
+        {series.map((s) => (
           <g key={s.key}>
             <polyline
               points={s.values.map((v, i) => `${px(i)},${y(v)}`).join(" ")}
@@ -284,16 +265,16 @@ export function TimeSeriesChart({
           </g>
         ))}
 
-        {points.map((p, i) =>
+        {labels.map((l, i) =>
           i % labelStep === 0 ? (
-            <text key={p.date} x={px(i)} y={BOTTOM + 22} textAnchor="middle" fill="var(--muted-foreground)" fontSize="11">
-              {p.label}
+            <text key={`${l}-${i}`} x={px(i)} y={BOTTOM + 22} textAnchor="middle" fill="var(--muted-foreground)" fontSize="11">
+              {l}
             </text>
           ) : null,
         )}
         <text
           x={(LEFT + RIGHT) / 2}
-          y={H - 6}
+          y={H - 8}
           textAnchor="middle"
           className="num"
           fill="var(--muted-foreground)"
@@ -303,7 +284,7 @@ export function TimeSeriesChart({
           {rangeLabel}
         </text>
 
-        {points.map((_, i) => (
+        {labels.map((_, i) => (
           <rect
             key={`h${i}`}
             x={px(i) - step / 2}
@@ -317,30 +298,26 @@ export function TimeSeriesChart({
         ))}
       </svg>
 
-      {hp && (
+      {hover !== null && (
         <div
-          className="panel pointer-events-none absolute top-24 z-20 w-72 rounded-xl border border-border p-3 text-xs shadow-lg"
+          className="panel pointer-events-none absolute top-20 z-20 w-72 rounded-xl border border-border p-3 text-xs shadow-lg"
           style={{
-            left: `${(px(hover!) / W) * 100}%`,
-            transform: `translateX(${px(hover!) > W / 2 ? "-110%" : "10%"})`,
+            left: `${(px(hover) / W) * 100}%`,
+            transform: `translateX(${px(hover) > W / 2 ? "-110%" : "10%"})`,
             background: "var(--background)",
           }}
         >
-          <div className="mb-2 font-semibold">{hp.label}</div>
+          <div className="mb-2 font-semibold">{labels[hover]}</div>
           <dl className="space-y-1">
-            {hs ? (
-              <>
-                <Row k="Email" v={hs.email} />
-                <Row k="Phone" v={hs.phone} />
-                <Row k="Address" v={hs.address} />
-                <Row k={scopeLabel} v={hs.total} bold />
-                <div className="my-1 border-t border-border" />
-              </>
-            ) : null}
-            <Row k="Total usable" v={hp.usable} bold={!hs} />
-            <Row k="Opportunity remaining" v={hp.recoverable} />
-            <Row k="Unrecoverable" v={hp.unrecoverable} />
-            <Row k="Bookings" v={hp.bookings} muted />
+            {series.map((s) => (
+              <div key={s.key} className="flex items-center justify-between gap-3">
+                <dt className="flex items-center gap-2 text-muted-foreground">
+                  <i className="size-2.5 rounded-full" style={{ background: s.color }} />
+                  {s.label}
+                </dt>
+                <dd className="num font-semibold">{nf.format(Math.round(s.values[hover] ?? 0))}</dd>
+              </div>
+            ))}
           </dl>
         </div>
       )}
@@ -348,20 +325,10 @@ export function TimeSeriesChart({
   );
 }
 
-function Row({
-  k,
-  v,
-  bold,
-  muted,
-}: {
-  k: string;
-  v: number;
-  bold?: boolean;
-  muted?: boolean;
-}) {
+function Row({ k, v, bold }: { k: string; v: number; bold?: boolean }) {
   return (
-    <div className={`flex justify-between gap-3 ${muted ? "text-muted-foreground" : ""}`}>
-      <dt className={muted ? "" : "text-muted-foreground"}>{k}</dt>
+    <div className="flex justify-between gap-3">
+      <dt className="text-muted-foreground">{k}</dt>
       <dd className={`num ${bold ? "font-bold" : "font-semibold"}`}>{nf.format(Math.round(v))}</dd>
     </div>
   );
